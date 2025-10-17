@@ -288,22 +288,35 @@ create_client_package() {
     LATEST_VERSION=$(curl -s "https://api.github.com/repos/rustdesk/rustdesk/releases/latest" | jq -r .tag_name)
 
     case $OS_TYPE in
-        Windows)
-            FILE_EXT="exe"
-            PLATFORM="x86_64"
-            CLIENT_URL="https://github.com/rustdesk/rustdesk/releases/download/${LATEST_VERSION}/rustdesk-${LATEST_VERSION}-${PLATFORM}.${FILE_EXT}"
-            SCITER_URL="https://github.com/rustdesk/rustdesk/releases/download/${LATEST_VERSION}/rustdesk-sciter.zip"
-            
-            echo_info "Lade Windows Client und Bundle-Tool..."
-            wget -q --show-progress "$CLIENT_URL" -O "${CLIENT_DIR}/rustdesk_win.exe"
-            wget -q "$SCITER_URL" -O "${CLIENT_DIR}/sciter.zip"
-            unzip -o "${CLIENT_DIR}/sciter.zip" -d "$CLIENT_DIR"
-            
-            echo_info "Bette Konfiguration ein..."
-            "${CLIENT_DIR}/wo-bundle.exe" "${CLIENT_DIR}/rustdesk_win.exe" --host "$SERVER_DOMAIN" --key "$RUSTDESK_KEY"
-            mv "${CLIENT_DIR}/rustdesk_win_bundled.exe" "${CLIENT_DIR}/RustDesk_Client_Windows.exe"
-            rm "${CLIENT_DIR}/rustdesk_win.exe" "${CLIENT_DIR}/sciter.zip" "${CLIENT_DIR}/wo-bundle.exe"
-            ;;
+    Windows)
+        # --- ERSETZEN SIE DEN GESAMTEN WINDOWS-BLOCK DURCH DIESEN CODE ---
+        
+        # 1. Python-Hilfsskript herunterladen (falls noch nicht vorhanden)
+        wget -q -N https://raw.githubusercontent.com/rustdesk/rustdesk/master/src/hbb-util.py -P "$CLIENT_DIR"
+        if [ $? -ne 0 ]; then
+            echo_error "Download des Python-Hilfsskripts fehlgeschlagen."
+            return 1
+        fi
+        chmod +x "${CLIENT_DIR}/hbb-util.py"
+        
+        # 2. Windows Client .exe herunterladen
+        echo_info "Lade Windows Client herunter..."
+        download_asset "rustdesk-.*-x86_64.exe" "${CLIENT_DIR}/RustDesk_Client_Windows.exe" || return 1
+        
+        # 3. Konfiguration mit dem Python-Skript einbetten
+        echo_info "Bette Konfiguration ein..."
+        python3 "${CLIENT_DIR}/hbb-util.py" --cm-config-set "${CLIENT_DIR}/RustDesk_Client_Windows.exe" --host "$SERVER_DOMAIN" --key "$RUSTDESK_KEY"
+        if [ $? -ne 0 ]; then
+            echo_error "Einbetten der Konfiguration fehlgeschlagen."
+            rm -f "${CLIENT_DIR}/RustDesk_Client_Windows.exe"
+            return 1
+        fi
+        
+        # 4. Aufräumen (optional, falls Sie das Skript behalten wollen)
+        # rm "${CLIENT_DIR}/hbb-util.py"
+        
+        # --- ENDE DES NEUEN WINDOWS-BLOCKS ---
+        ;;
         macOS)
             FILE_EXT="dmg"
             PLATFORMS=("aarch64" "x86_64") # Apple Silicon & Intel
