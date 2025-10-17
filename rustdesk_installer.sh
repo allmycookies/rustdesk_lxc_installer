@@ -72,7 +72,7 @@ install_server() {
     # 1. Abhängigkeiten installieren
     echo_info "Installiere notwendige Abhängigkeiten (wget, unzip, curl, jq, qrencode)..."
     apt-get update &>/dev/null
-    apt-get install -y wget sudo unzip curl jq qrencode &>> "$LOG_FILE"
+    apt-get install -y wget unzip curl jq qrencode &>> "$LOG_FILE"
     if [ $? -ne 0 ]; then
         echo_error "Installation der Abhängigkeiten fehlgeschlagen. Details siehe in $LOG_FILE"
         exit 1
@@ -101,7 +101,7 @@ install_server() {
         fi
     fi
 
-    # 4. Server-Binaries herunterladen
+    # 4. Server-Binaries herunterladen und korrekt entpacken
     echo_info "Lade die neueste Version des RustDesk Servers herunter..."
     LATEST_VERSION=$(curl -s "https://api.github.com/repos/rustdesk/rustdesk-server/releases/latest" | jq -r .tag_name)
     wget "https://github.com/rustdesk/rustdesk-server/releases/download/${LATEST_VERSION}/rustdesk-server-linux-amd64.zip" -O /tmp/rustdesk-server.zip &>> "$LOG_FILE"
@@ -112,21 +112,14 @@ install_server() {
     fi
 
     mkdir -p "$INSTALL_PATH"
-    # --- KORRIGIERTER BLOCK ---
-    # Entpackt direkt in den Installationspfad
     unzip -o /tmp/rustdesk-server.zip -d "$INSTALL_PATH" &>> "$LOG_FILE"
-    
-    # Verschiebt die Dateien aus der verschachtelten Struktur nach oben
-    # Die Pfad-Prüfung macht es robuster für zukünftige Änderungen
+
     NESTED_PATH=$(find "$INSTALL_PATH" -name hbbs -exec dirname {} \;)
     if [ -n "$NESTED_PATH" ] && [ "$NESTED_PATH" != "$INSTALL_PATH" ]; then
         mv "${NESTED_PATH}/"* "$INSTALL_PATH/"
-        # Entfernt die leeren übergeordneten Ordner
         find "$INSTALL_PATH" -type d -empty -delete
     fi
-    
     rm -f /tmp/rustdesk-server.zip
-    # --- ENDE KORRIGIERTER BLOCK ---
 
     # 5. Systemd-Services erstellen
     echo_info "Erstelle Systemd-Dienste..."
@@ -193,10 +186,10 @@ EOL
 
     echo_success "RustDesk Server wurde erfolgreich installiert und gestartet."
     echo_info "Ihr öffentlicher Schlüssel wird nun angezeigt. Bewahren Sie ihn gut auf."
+    echo
     sleep 2
-    echo # Diese Zeile fügt den Zeilenumbruch hinzu
     cat "${INSTALL_PATH}/id_ed25519.pub"
-    echo # Diese Zeile fügt den Zeilenumbruch hinzu
+    
     read -rp "Drücken Sie [Enter], um zum Hauptmenü zurückzukehren."
 }
 
@@ -236,7 +229,6 @@ edit_parameters() {
     nano "$CONFIG_FILE"
     read -rp "Sollen die Dienste jetzt neugestartet werden, um die Änderungen zu übernehmen? (j/N): " RESTART_CHOICE
     if [[ "$RESTART_CHOICE" =~ ^[jJ]$ ]]; then
-        # Parameter in Service-Dateien aktualisieren
         load_config
         sed -i "s|ExecStart=.*|ExecStart=${INSTALL_PATH}/hbbs ${HBBS_PARAMS}|" /etc/systemd/system/hbbs.service
         sed -i "s|ExecStart=.*|ExecStart=${INSTALL_PATH}/hbbr ${HBBR_PARAMS}|" /etc/systemd/system/hbbr.service
@@ -253,7 +245,7 @@ reset_parameters() {
     sed -i "s|HBBS_PARAMS=.*|HBBS_PARAMS=\"${HBBS_PARAMS_DEFAULT}\"|" "$CONFIG_FILE"
     sed -i "s|HBBR_PARAMS=.*|HBBR_PARAMS=\"${HBBR_PARAMS_DEFAULT}\"|" "$CONFIG_FILE"
     echo_success "Parameter wurden auf Standardwerte zurückgesetzt."
-    edit_parameters # Direkt zur Bearbeitung/Neustart springen
+    edit_parameters
 }
 
 
@@ -270,6 +262,7 @@ generate_new_key() {
         echo_success "Neue Schlüssel wurden generiert. Server wird gestartet..."
         sleep 2
         echo_info "Der neue öffentliche Schlüssel lautet:"
+        echo
         cat "${INSTALL_PATH}/id_ed25519.pub"
     else
         echo_info "Aktion abgebrochen."
@@ -277,7 +270,6 @@ generate_new_key() {
 }
 
 # --- Client-Erstellungsfunktionen ---
-
 create_client_package() {
     OS_TYPE=$1
     echo_info "Erstelle Client-Paket für ${OS_TYPE}..."
@@ -285,66 +277,64 @@ create_client_package() {
     RUSTDESK_KEY=$(cat "${INSTALL_PATH}/id_ed25519.pub")
     
     mkdir -p "$CLIENT_DIR"
-    LATEST_VERSION=$(curl -s "https://api.github.com/repos/rustdesk/rustdesk/releases/latest" | jq -r .tag_name)
+    
+    API_URL="https://api.github.com/repos/rustdesk/rustdesk/releases/latest"
+    
+    # Hilfsfunktion zum sicheren Herunterladen von Release-Assets
+    download_asset() {
+        ASSET_NAME_PATTERN=$1
+        OUTPUT_FILE=$2
+        DOWNLOAD_URL=$(curl -s "$API_URL" | jq -r ".assets[] | select(.name | test(\"${ASSET_NAME_PATTERN}\")) | .browser_download_url")
+        
+        if [ -z "$DOWNLOAD_URL" ]; then
+            echo_error "Konnte Download-URL für '${ASSET_NAME_PATTERN}' nicht finden."
+            return 1
+        fi
+        
+        echo_info "Lade '${ASSET_NAME_PATTERN}' herunter..."
+        wget --show-progress "$DOWNLOAD_URL" -O "$OUTPUT_FILE" || { echo_error "Download fehlgeschlagen."; return 1; }
+        return 0
+    }
+
+    # Funktion zum Einbetten der Konfiguration durch binäres Ersetzen (offizielle Methode)
+    embed_config() {
+        FILE_PATH=$1
+        CONFIG_JSON="{\"host\":\"${SERVER_DOMAIN}\",\"key\":\"${RUSTDESK_KEY}\"}"
+        PLACEHOLDER="!!!rustdesk-cm-config!!!"
+        
+        # Ersetze den Platzhalter durch die Konfiguration. Fülle den Rest mit Null-Bytes auf.
+        printf "%s" "$CONFIG_JSON" | dd of="$FILE_PATH" bs=1 seek=$(grep -abo "$PLACEHOLDER" "$FILE_PATH" | cut -d: -f1) conv=notrunc &>/dev/null
+        if [ $? -ne 0 ]; then
+            echo_error "Einbetten der Konfiguration in '${FILE_PATH}' fehlgeschlagen."
+            return 1
+        fi
+        return 0
+    }
 
     case $OS_TYPE in
-    Windows)
-        # --- ERSETZEN SIE DEN GESAMTEN WINDOWS-BLOCK DURCH DIESEN CODE ---
-        
-        # 1. Python-Hilfsskript herunterladen (falls noch nicht vorhanden)
-        wget -q -N https://raw.githubusercontent.com/rustdesk/rustdesk/master/src/hbb-util.py -P "$CLIENT_DIR"
-        if [ $? -ne 0 ]; then
-            echo_error "Download des Python-Hilfsskripts fehlgeschlagen."
-            return 1
-        fi
-        chmod +x "${CLIENT_DIR}/hbb-util.py"
-        
-        # 2. Windows Client .exe herunterladen
-        echo_info "Lade Windows Client herunter..."
-        download_asset "rustdesk-.*-x86_64.exe" "${CLIENT_DIR}/RustDesk_Client_Windows.exe" || return 1
-        
-        # 3. Konfiguration mit dem Python-Skript einbetten
-        echo_info "Bette Konfiguration ein..."
-        python3 "${CLIENT_DIR}/hbb-util.py" --cm-config-set "${CLIENT_DIR}/RustDesk_Client_Windows.exe" --host "$SERVER_DOMAIN" --key "$RUSTDESK_KEY"
-        if [ $? -ne 0 ]; then
-            echo_error "Einbetten der Konfiguration fehlgeschlagen."
-            rm -f "${CLIENT_DIR}/RustDesk_Client_Windows.exe"
-            return 1
-        fi
-        
-        # 4. Aufräumen (optional, falls Sie das Skript behalten wollen)
-        # rm "${CLIENT_DIR}/hbb-util.py"
-        
-        # --- ENDE DES NEUEN WINDOWS-BLOCKS ---
-        ;;
+        Windows)
+            FILE_TO_PATCH="${CLIENT_DIR}/RustDesk_Client_Windows.exe"
+            download_asset "rustdesk-.*-x86_64.exe" "$FILE_TO_PATCH" || return 1
+            echo_info "Bette Konfiguration für Windows ein..."
+            embed_config "$FILE_TO_PATCH" || return 1
+            ;;
         macOS)
-            FILE_EXT="dmg"
-            PLATFORMS=("aarch64" "x86_64") # Apple Silicon & Intel
-            wget -q -N https://raw.githubusercontent.com/rustdesk/rustdesk/master/src/hbb-util.py -P "$CLIENT_DIR"
-            chmod +x "${CLIENT_DIR}/hbb-util.py"
-            
+            PLATFORMS=("aarch64" "x86_64")
             for PLATFORM in "${PLATFORMS[@]}"; do
                 echo_info "Bearbeite macOS Client für ${PLATFORM}..."
-                CLIENT_URL="https://github.com/rustdesk/rustdesk/releases/download/${LATEST_VERSION}/rustdesk-${LATEST_VERSION}-${PLATFORM}.${FILE_EXT}"
-                wget -q --show-progress "$CLIENT_URL" -O "${CLIENT_DIR}/rustdesk_${PLATFORM}.dmg"
-                python3 "${CLIENT_DIR}/hbb-util.py" --cm-config-set "${CLIENT_DIR}/rustdesk_${PLATFORM}.dmg" --host "$SERVER_DOMAIN" --key "$RUSTDESK_KEY"
+                FILE_TO_PATCH="${CLIENT_DIR}/rustdesk_${PLATFORM}.dmg"
+                download_asset "rustdesk-.*-${PLATFORM}.dmg" "$FILE_TO_PATCH" || continue
+                embed_config "$FILE_TO_PATCH" || continue
             done
-            rm "${CLIENT_DIR}/hbb-util.py"
             ;;
         Linux)
-            FILE_EXT="AppImage"
-            PLATFORM="x86_64"
-            CLIENT_URL="https://github.com/rustdesk/rustdesk/releases/download/${LATEST_VERSION}/rustdesk-${LATEST_VERSION}-${PLATFORM}.${FILE_EXT}"
-            wget -q -N https://raw.githubusercontent.com/rustdesk/rustdesk/master/src/hbb-util.py -P "$CLIENT_DIR"
-            chmod +x "${CLIENT_DIR}/hbb-util.py"
-
-            echo_info "Lade und konfiguriere Linux AppImage..."
-            wget -q --show-progress "$CLIENT_URL" -O "${CLIENT_DIR}/RustDesk_Client_Linux.AppImage"
-            python3 "${CLIENT_DIR}/hbb-util.py" --cm-config-set "${CLIENT_DIR}/RustDesk_Client_Linux.AppImage" --host "$SERVER_DOMAIN" --key "$RUSTDESK_KEY"
-            rm "${CLIENT_DIR}/hbb-util.py"
+            FILE_TO_PATCH="${CLIENT_DIR}/RustDesk_Client_Linux.AppImage"
+            download_asset "rustdesk-.*-x86_64.AppImage" "$FILE_TO_PATCH" || return 1
+            echo_info "Bette Konfiguration für Linux ein..."
+            embed_config "$FILE_TO_PATCH" || return 1
             ;;
     esac
-    echo_success "Client-Paket(e) für ${OS_TYPE} wurde(n) in ${CLIENT_DIR} erstellt."
+    echo_success "Client-Paket(e) für ${OS_TYPE} wurde(n) erfolgreich in ${CLIENT_DIR} erstellt."
 }
 
 show_qr_code() {
