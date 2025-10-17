@@ -200,22 +200,43 @@ EOF
 # RunProgram/ExecuteParameters lt. 7-Zip Doku. %T = Temp-Ordner.  (SFX entfernt Temp nach Programmende)
 # Quelle: 7-Zip SFX-Doku. :contentReference[oaicite:2]{index=2}
 build_windows_sfx() {
-  local PAYLOAD_DIR="$1" OUT_EXE="$2" RUN_LINE="$3"
+  local PAYLOAD_DIR="$1" OUT_EXE="$2" EXEC_FILE="$3" EXEC_PARAMS="$4"
+
+  # Bevorzuge GUI-Modul (7zS.sfx). Fallbacks nur falls vorhanden.
   local SFX_MODULE=""
-  for cand in /usr/lib/p7zip/7zS.sfx /usr/lib/p7zip/7z.sfx /usr/lib/p7zip/7zCon.sfx; do
+  for cand in \
+    /usr/lib/p7zip/7zS.sfx \
+    /usr/lib/p7zip/7z.sfx \
+    /usr/lib/p7zip/7zCon.sfx
+  do
     [ -f "$cand" ] && { SFX_MODULE="$cand"; break; }
   done
-  [ -z "$SFX_MODULE" ] && { echo_error "SFX-Modul nicht gefunden (p7zip-full?)."; return 1; }
+  if [ -z "$SFX_MODULE" ]; then
+    echo_error "SFX-Modul nicht gefunden (installiere: p7zip-full)."
+    return 1
+  fi
 
+  # Archiv bauen (alle Dateien im Root des Payloads)
   ( cd "$PAYLOAD_DIR" && 7z a -mx9 -bd -t7z payload.7z . >/dev/null ) || return 1
+
+  # SFX-Konfiguration:
+  #  - GUIMode=2: minimales GUI (verhindert „nichts passiert“-Eindruck)
+  #  - ExecuteFile/ExecuteParameters: sauberer Weg für Programme + Parameter
   cat > "$PAYLOAD_DIR/sfx_config.txt" <<EOF
 ;!@Install@!UTF-8!
-RunProgram="${RUN_LINE}"
+GUIMode="2"
+Title="RustDesk One-File"
+ExecuteFile="${EXEC_FILE}"
+ExecuteParameters="${EXEC_PARAMS}"
 ;!@InstallEnd@!
 EOF
+
+  # Zusammenfügen in richtiger Reihenfolge
   cat "$SFX_MODULE" "$PAYLOAD_DIR/sfx_config.txt" "$PAYLOAD_DIR/payload.7z" > "$OUT_EXE" || return 1
   chmod +x "$OUT_EXE"
+  return 0
 }
+
 
 # makeself-Wrapper (extrahiert -> führt Befehl -> räumt auf)
 build_linux_makeself() {
@@ -245,13 +266,21 @@ create_client_package() {
     Windows)
       local TMP; TMP="$(mktemp -d)"
       local OUT="${CLIENT_DIR}/RustDesk_${SERVER_DOMAIN}_Windows.exe"
+      local PUBKEY; PUBKEY=$(cat "${INSTALL_PATH}/id_ed25519.pub")
+    
+      echo_info "Baue Windows One-File-Client…"
       download_latest_client_asset "x86_64\\.exe$" "${TMP}/rustdesk.exe" || { rm -rf "$TMP"; return 1; }
-      mkdir -p "${TMP}/config"; write_server_toml "${TMP}/config/RustDesk2.toml" "$SERVER_DOMAIN" "$PUBKEY"
-      # SFX: führt NUR rustdesk.exe mit --import-config aus, aus dem Temp-Ordner; SFX löscht danach Temp.  --config ist in Docs, aber teils inkonsistent; --import-config mit TOML ist robuster. :contentReference[oaicite:4]{index=4}
-      local RUN="\"%T\\rustdesk.exe\" --import-config \"%T\\config\\RustDesk2.toml\""
-      build_windows_sfx "$TMP" "$OUT" "$RUN" || { rm -rf "$TMP"; return 1; }
-      rm -rf "$TMP"; echo_success "Windows One-File erstellt: $OUT"
+      mkdir -p "${TMP}/config"
+      write_server_toml "${TMP}/config/RustDesk2.toml" "$SERVER_DOMAIN" "$PUBKEY"
+    
+      # Startet rustdesk.exe mit Import der TOML im Entpack-Ordner
+      build_windows_sfx "$TMP" "$OUT" "rustdesk.exe" "--import-config config\\RustDesk2.toml" \
+        || { rm -rf "$TMP"; return 1; }
+    
+      rm -rf "$TMP"
+      echo_success "Windows One-File erstellt: $OUT"
       ;;
+
 
     Linux)
       local TMP; TMP="$(mktemp -d)"
