@@ -189,7 +189,7 @@ EOL
     echo
     sleep 2
     cat "${INSTALL_PATH}/id_ed25519.pub"
-    
+    echo
     read -rp "Drücken Sie [Enter], um zum Hauptmenü zurückzukehren."
 }
 
