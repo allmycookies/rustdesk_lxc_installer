@@ -200,42 +200,36 @@ EOF
 # RunProgram/ExecuteParameters lt. 7-Zip Doku. %T = Temp-Ordner.  (SFX entfernt Temp nach Programmende)
 # Quelle: 7-Zip SFX-Doku. :contentReference[oaicite:2]{index=2}
 build_windows_sfx() {
-  local PAYLOAD_DIR="$1" OUT_EXE="$2" EXEC_FILE="$3" EXEC_PARAMS="$4"
+  local PAYLOAD_DIR="$1" OUT_EXE="$2" RUNLINE="$3"
 
-  # Bevorzuge GUI-Modul (7zS.sfx). Fallbacks nur falls vorhanden.
+  # Bevorzuge das GUI-Modul (7zS.sfx)
   local SFX_MODULE=""
-  for cand in \
-    /usr/lib/p7zip/7zS.sfx \
-    /usr/lib/p7zip/7z.sfx \
-    /usr/lib/p7zip/7zCon.sfx
-  do
-    [ -f "$cand" ] && { SFX_MODULE="$cand"; break; }
+  for cand in /usr/lib/p7zip/7zS.sfx /usr/lib/p7zip/7z.sfx /usr/lib/p7zip/7zCon.sfx; do
+    if [ -f "$cand" ]; then SFX_MODULE="$cand"; break; fi
   done
   if [ -z "$SFX_MODULE" ]; then
     echo_error "SFX-Modul nicht gefunden (installiere: p7zip-full)."
     return 1
   fi
 
-  # Archiv bauen (alle Dateien im Root des Payloads)
+  # Archiv bauen
   ( cd "$PAYLOAD_DIR" && 7z a -mx9 -bd -t7z payload.7z . >/dev/null ) || return 1
 
-  # SFX-Konfiguration:
-  #  - GUIMode=2: minimales GUI (verhindert „nichts passiert“-Eindruck)
-  #  - ExecuteFile/ExecuteParameters: sauberer Weg für Programme + Parameter
+  # Nur RunProgram verwenden – Parameter gehören mit in die gleiche Zeile
   cat > "$PAYLOAD_DIR/sfx_config.txt" <<EOF
 ;!@Install@!UTF-8!
 GUIMode="2"
 Title="RustDesk One-File"
-ExecuteFile="${EXEC_FILE}"
-ExecuteParameters="${EXEC_PARAMS}"
+RunProgram=${RUNLINE}
 ;!@InstallEnd@!
 EOF
 
-  # Zusammenfügen in richtiger Reihenfolge
+  # Zusammenfügen
   cat "$SFX_MODULE" "$PAYLOAD_DIR/sfx_config.txt" "$PAYLOAD_DIR/payload.7z" > "$OUT_EXE" || return 1
   chmod +x "$OUT_EXE"
   return 0
 }
+
 
 
 # makeself-Wrapper (extrahiert -> führt Befehl -> räumt auf)
@@ -273,14 +267,15 @@ create_client_package() {
       mkdir -p "${TMP}/config"
       write_server_toml "${TMP}/config/RustDesk2.toml" "$SERVER_DOMAIN" "$PUBKEY"
     
-      # Startet rustdesk.exe mit Import der TOML im Entpack-Ordner
-      build_windows_sfx "$TMP" "$OUT" "rustdesk.exe" "--import-config config\\RustDesk2.toml" \
-        || { rm -rf "$TMP"; return 1; }
+      # Wichtig: ALLES in derselben RunProgram-Zeile, korrekt gequotet.
+      # SFX startet im Entpack-Ordner -> relative Pfade funktionieren.
+      # Keine Batch, kein PowerShell – nur Prozessstart mit Parametern.
+      local RUNLINE="\"\\\"rustdesk.exe\\\" --import-config config\\\\RustDesk2.toml\""
     
+      build_windows_sfx "$TMP" "$OUT" "$RUNLINE" || { rm -rf "$TMP"; return 1; }
       rm -rf "$TMP"
       echo_success "Windows One-File erstellt: $OUT"
       ;;
-
 
     Linux)
       local TMP; TMP="$(mktemp -d)"
