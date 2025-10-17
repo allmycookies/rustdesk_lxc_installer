@@ -72,7 +72,7 @@ install_server() {
     # 1. Abhängigkeiten installieren
     echo_info "Installiere notwendige Abhängigkeiten (wget, unzip, curl, jq, qrencode)..."
     apt-get update &>/dev/null
-    apt-get install -y wget unzip curl jq qrencode &>> "$LOG_FILE"
+    apt-get install -y wget sudo unzip curl jq qrencode &>> "$LOG_FILE"
     if [ $? -ne 0 ]; then
         echo_error "Installation der Abhängigkeiten fehlgeschlagen. Details siehe in $LOG_FILE"
         exit 1
