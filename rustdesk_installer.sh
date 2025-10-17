@@ -194,8 +194,9 @@ EOL
     echo_success "RustDesk Server wurde erfolgreich installiert und gestartet."
     echo_info "Ihr öffentlicher Schlüssel wird nun angezeigt. Bewahren Sie ihn gut auf."
     sleep 2
+    echo # Diese Zeile fügt den Zeilenumbruch hinzu
     cat "${INSTALL_PATH}/id_ed25519.pub"
-    
+    echo # Diese Zeile fügt den Zeilenumbruch hinzu
     read -rp "Drücken Sie [Enter], um zum Hauptmenü zurückzukehren."
 }
 
