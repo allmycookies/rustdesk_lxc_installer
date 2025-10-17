@@ -169,10 +169,22 @@ generate_new_key() {
 download_latest_client_asset() {
   local PATTERN="$1" OUTFILE="$2"
   local API_URL="https://api.github.com/repos/rustdesk/rustdesk/releases/latest"
-  local URL; URL=$(curl -s "$API_URL" | jq -r ".assets[] | select(.name | test(\"$PATTERN\")) | .browser_download_url" | head -n1)
-  [ -z "$URL" ] && { echo_error "Asset nicht gefunden: $PATTERN"; return 1; }
-  echo_info "Lade $(basename "$URL")"; wget --show-progress -O "$OUTFILE" "$URL" || return 1
+
+  # Pattern als Variable an jq übergeben -> keine Escape-Probleme
+  local URL
+  URL=$(curl -sL "$API_URL" | jq -r --arg re "$PATTERN" '
+    .assets[] | select(.name | test($re)) | .browser_download_url
+  ' | head -n1)
+
+  if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+    echo_error "Asset nicht gefunden: $PATTERN"
+    return 1
+  fi
+
+  echo_info "Lade $(basename "$URL")"
+  wget --show-progress -O "$OUTFILE" "$URL" || return 1
 }
+
 
 # TOML für Server erzeugen (immer frisch -> Schlüssel/Domain-Änderungen greifen)
 write_server_toml() {
@@ -233,7 +245,7 @@ create_client_package() {
     Windows)
       local TMP; TMP="$(mktemp -d)"
       local OUT="${CLIENT_DIR}/RustDesk_${SERVER_DOMAIN}_Windows.exe"
-      download_latest_client_asset "windows.*x86_64\\.exe$" "${TMP}/rustdesk.exe" || { rm -rf "$TMP"; return 1; }
+      download_latest_client_asset "x86_64\\.exe$" "${TMP}/rustdesk.exe" || { rm -rf "$TMP"; return 1; }
       mkdir -p "${TMP}/config"; write_server_toml "${TMP}/config/RustDesk2.toml" "$SERVER_DOMAIN" "$PUBKEY"
       # SFX: führt NUR rustdesk.exe mit --import-config aus, aus dem Temp-Ordner; SFX löscht danach Temp.  --config ist in Docs, aber teils inkonsistent; --import-config mit TOML ist robuster. :contentReference[oaicite:4]{index=4}
       local RUN="\"%T\\rustdesk.exe\" --import-config \"%T\\config\\RustDesk2.toml\""
