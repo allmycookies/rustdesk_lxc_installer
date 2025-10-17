@@ -489,7 +489,7 @@ STATE=$(check_installation_state)
 
 case $STATE in
     "SAUBER")
-        read -rp "Willkommen beim RustDesk Server Manager. Keine Installation gefunden. Jetzt installieren? (J/n): " INSTALL_CHOICE
+        read -rp "Willkommen beim RustDesk Server Manager v0.4. Keine Installation gefunden. Jetzt installieren? (J/n): " INSTALL_CHOICE
         if [[ -z "$INSTALL_CHOICE" || "$INSTALL_CHOICE" =~ ^[jJ]$ ]]; then
             install_server
             main_menu
