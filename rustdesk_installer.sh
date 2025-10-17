@@ -439,8 +439,8 @@ main_menu() {
             8) generate_new_key ;;
             9) update_server ;;
             10) 
-                read -rp "WARNUNG: Dies wird den Server vollständig entfernen. Geben Sie 'DEINSTALLIEREN' ein zur Bestätigung: " CONFIRM_UNINSTALL
-                if [ "$CONFIRM_UNINSTALL" == "DEINSTALLIEREN" ]; then
+                read -rp "WARNUNG: Dies wird den Server vollständig entfernen. Geben Sie 'JA' ein zur Bestätigung: " CONFIRM_UNINSTALL
+                if [ "$CONFIRM_UNINSTALL" == "JA" ]; then
                     uninstall_server
                     exit 0
                 else
