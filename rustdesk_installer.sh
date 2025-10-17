@@ -18,7 +18,7 @@ C_RESET='\033[0m'
 C_RED='\033[0;31m'
 C_GREEN='\033[0;32m'
 C_YELLOW='\033[0;33m'
-C_BLUE='\033[0;34m'
+C_BLUE='\033[38;5;81m'
 
 # --- Hilfsfunktionen für formatierte Ausgaben ---
 echo_info() { echo -e "${C_BLUE}INFO: $1${C_RESET}"; }
