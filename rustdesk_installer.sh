@@ -112,9 +112,21 @@ install_server() {
     fi
 
     mkdir -p "$INSTALL_PATH"
-    unzip -o /tmp/rustdesk-server.zip -d "$INSTALL_PATH/amd64" &>> "$LOG_FILE"
-    mv "$INSTALL_PATH/amd64/"* "$INSTALL_PATH/"
-    rm -rf /tmp/rustdesk-server.zip "$INSTALL_PATH/amd64"
+    # --- KORRIGIERTER BLOCK ---
+    # Entpackt direkt in den Installationspfad
+    unzip -o /tmp/rustdesk-server.zip -d "$INSTALL_PATH" &>> "$LOG_FILE"
+    
+    # Verschiebt die Dateien aus der verschachtelten Struktur nach oben
+    # Die Pfad-Prüfung macht es robuster für zukünftige Änderungen
+    NESTED_PATH=$(find "$INSTALL_PATH" -name hbbs -exec dirname {} \;)
+    if [ -n "$NESTED_PATH" ] && [ "$NESTED_PATH" != "$INSTALL_PATH" ]; then
+        mv "${NESTED_PATH}/"* "$INSTALL_PATH/"
+        # Entfernt die leeren übergeordneten Ordner
+        find "$INSTALL_PATH" -type d -empty -delete
+    fi
+    
+    rm -f /tmp/rustdesk-server.zip
+    # --- ENDE KORRIGIERTER BLOCK ---
 
     # 5. Systemd-Services erstellen
     echo_info "Erstelle Systemd-Dienste..."
