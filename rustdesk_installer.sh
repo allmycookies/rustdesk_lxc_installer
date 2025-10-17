@@ -104,7 +104,7 @@ install_server() {
     # 4. Server-Binaries herunterladen
     echo_info "Lade die neueste Version des RustDesk Servers herunter..."
     LATEST_VERSION=$(curl -s "https://api.github.com/repos/rustdesk/rustdesk-server/releases/latest" | jq -r .tag_name)
-    wget "https://github.com/rustdesk/rustdesk-server/releases/download/${LATEST_VERSION}/rustdesk-server-linux-x64.zip" -O /tmp/rustdesk-server.zip &>> "$LOG_FILE"
+    wget "https://github.com/rustdesk/rustdesk-server/releases/download/${LATEST_VERSION}/rustdesk-server-linux-amd64.zip" -O /tmp/rustdesk-server.zip &>> "$LOG_FILE"
     if [ $? -ne 0 ]; then
         echo_error "Download fehlgeschlagen. Details siehe in $LOG_FILE"
         uninstall_server # Aufräumen
@@ -112,9 +112,9 @@ install_server() {
     fi
 
     mkdir -p "$INSTALL_PATH"
-    unzip -o /tmp/rustdesk-server.zip -d "$INSTALL_PATH/x64" &>> "$LOG_FILE"
-    mv "$INSTALL_PATH/x64/"* "$INSTALL_PATH/"
-    rm -rf /tmp/rustdesk-server.zip "$INSTALL_PATH/x64"
+    unzip -o /tmp/rustdesk-server.zip -d "$INSTALL_PATH/amd64" &>> "$LOG_FILE"
+    mv "$INSTALL_PATH/amd64/"* "$INSTALL_PATH/"
+    rm -rf /tmp/rustdesk-server.zip "$INSTALL_PATH/amd64"
 
     # 5. Systemd-Services erstellen
     echo_info "Erstelle Systemd-Dienste..."
@@ -206,10 +206,10 @@ update_server() {
         if [[ "$UPDATE_CHOICE" =~ ^[jJ]$ ]]; then
             stop_services
             echo_info "Lade Version $LATEST_VERSION herunter..."
-            wget "https://github.com/rustdesk/rustdesk-server/releases/download/${LATEST_VERSION}/rustdesk-server-linux-x64.zip" -O /tmp/rustdesk-server.zip &>> "$LOG_FILE"
-            unzip -o /tmp/rustdesk-server.zip -d "$INSTALL_PATH/x64" &>> "$LOG_FILE"
-            mv "$INSTALL_PATH/x64/"* "$INSTALL_PATH/"
-            rm -rf /tmp/rustdesk-server.zip "$INSTALL_PATH/x64"
+            wget "https://github.com/rustdesk/rustdesk-server/releases/download/${LATEST_VERSION}/rustdesk-server-linux-amd64.zip" -O /tmp/rustdesk-server.zip &>> "$LOG_FILE"
+            unzip -o /tmp/rustdesk-server.zip -d "$INSTALL_PATH/amd64" &>> "$LOG_FILE"
+            mv "$INSTALL_PATH/amd64/"* "$INSTALL_PATH/"
+            rm -rf /tmp/rustdesk-server.zip "$INSTALL_PATH/amd64"
             start_services
             echo_success "Server wurde auf Version $LATEST_VERSION aktualisiert."
         fi
