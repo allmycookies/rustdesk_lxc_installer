@@ -4,6 +4,7 @@
 #  RustDesk Server Manager (RDSM)
 #  Ein Skript zur einfachen Installation, Verwaltung und
 #  Client-Erstellung für einen selbstgehosteten RustDesk Server.
+#  Version: v0.6 (one-file client builder, no ps1/cmd)
 # ##################################################################
 
 # --- Globale Variablen und Konfiguration ---
@@ -13,497 +14,415 @@ INSTALL_PATH="/opt/rustdesk-server"
 CLIENT_DIR="${INSTALL_PATH}/clients"
 LOG_FILE="/var/log/rdsm_installer.log"
 
-# --- Farbdefinitionen für die Ausgabe ---
-C_RESET='\033[0m'
-C_RED='\033[0;31m'
-C_GREEN='\033[0;32m'
-C_YELLOW='\033[0;33m'
-C_BLUE='\033[38;5;81m'
-
-# --- Hilfsfunktionen für formatierte Ausgaben ---
-echo_info() { echo -e "${C_BLUE}INFO: $1${C_RESET}"; }
+# --- Farben ---
+C_RESET='\033[0m'; C_RED='\033[0;31m'; C_GREEN='\033[0;32m'; C_YELLOW='\033[0;33m'; C_BLUE='\033[38;5;81m'
+echo_info()    { echo -e "${C_BLUE}INFO: $1${C_RESET}"; }
 echo_success() { echo -e "${C_GREEN}ERFOLG: $1${C_RESET}"; }
 echo_warning() { echo -e "${C_YELLOW}WARNUNG: $1${C_RESET}"; }
-echo_error() { echo -e "${C_RED}FEHLER: $1${C_RESET}"; }
+echo_error()   { echo -e "${C_RED}FEHLER: $1${C_RESET}"; }
 
-# --- Hauptfunktionen ---
+# --- Root prüfen ---
+check_root() { if [ "$(id -u)" -ne 0 ]; then echo_error "Als root ausführen (sudo)."; exit 1; fi; }
 
-# Funktion zur Überprüfung, ob das Skript als root ausgeführt wird
-check_root() {
-    if [ "$(id -u)" -ne 0 ]; then
-        echo_error "Dieses Skript muss mit Root-Rechten ausgeführt werden. Bitte verwenden Sie 'sudo'."
-        exit 1
-    fi
-}
-
-# Funktion zur Überprüfung des Installationsstatus
+# --- Installationsstatus ---
 check_installation_state() {
-    if [ -f "$CONFIG_FILE" ]; then
-        echo "VOLLSTÄNDIG"
-    elif [ -d "$INSTALL_PATH" ] || [ -f "/etc/systemd/system/hbbs.service" ]; then
-        echo "FEHLGESCHLAGEN"
-    else
-        echo "SAUBER"
-    fi
+  if [ -f "$CONFIG_FILE" ]; then echo "VOLLSTÄNDIG"
+  elif [ -d "$INSTALL_PATH" ] || [ -f "/etc/systemd/system/hbbs.service" ]; then echo "FEHLGESCHLAGEN"
+  else echo "SAUBER"; fi
 }
 
-# Funktion zur Deinstallation
+# --- Dienste/Deinstall ---
 uninstall_server() {
-    echo_info "Stoppe und deaktiviere RustDesk-Dienste..."
-    systemctl stop hbbs hbbr &>/dev/null
-    systemctl disable hbbs hbbr &>/dev/null
-
-    echo_info "Entferne Systemd-Service-Dateien..."
-    rm -f /etc/systemd/system/hbbs.service
-    rm -f /etc/systemd/system/hbbr.service
-    systemctl daemon-reload
-
-    echo_info "Entferne Installations- und Konfigurationsdateien..."
-    rm -rf "$INSTALL_PATH"
-    rm -rf "$CONFIG_DIR"
-
-    echo_success "RustDesk Server wurde vollständig deinstalliert."
+  echo_info "Stoppe RustDesk-Dienste..."; systemctl stop hbbs hbbr &>/dev/null; systemctl disable hbbs hbbr &>/dev/null
+  echo_info "Entferne systemd Units..."; rm -f /etc/systemd/system/hbbs.service /etc/systemd/system/hbbr.service; systemctl daemon-reload
+  echo_info "Entferne Dateien..."; rm -rf "$INSTALL_PATH" "$CONFIG_DIR"
+  echo_success "RustDesk Server deinstalliert."
 }
 
-# Installationsroutine
+# --- Installation ---
 install_server() {
-    echo_info "Starte die Installation des RustDesk Servers..."
-    
-    # 1. Abhängigkeiten installieren
-    echo_info "Installiere notwendige Abhängigkeiten (wget, unzip, curl, jq, qrencode)..."
-    apt-get update &>/dev/null
-    apt-get install -y wget unzip curl jq qrencode &>> "$LOG_FILE"
-    if [ $? -ne 0 ]; then
-        echo_error "Installation der Abhängigkeiten fehlgeschlagen. Details siehe in $LOG_FILE"
-        exit 1
-    fi
+  echo_info "Installiere RustDesk Server..."
+  echo_info "Installiere Pakete (wget unzip curl jq qrencode file xz-utils p7zip-full makeself)..."
+  apt-get update &>/dev/null
+  apt-get install -y wget unzip curl jq qrencode file xz-utils p7zip-full makeself &>> "$LOG_FILE" || { echo_error "Pakete fehlgeschlagen (siehe $LOG_FILE)"; exit 1; }
 
-    # 2. Domain abfragen
-    read -rp "Bitte geben Sie Ihre öffentliche Domain für den Server ein (z.B. rustdesk.ihredomain.de): " SERVER_DOMAIN
-    if [ -z "$SERVER_DOMAIN" ]; then
-        echo_error "Die Domain darf nicht leer sein. Abbruch."
-        exit 1
-    fi
+  read -rp "Öffentliche Domain (z.B. rustdesk.deine-domain.de): " SERVER_DOMAIN
+  [ -z "$SERVER_DOMAIN" ] && { echo_error "Domain leer."; exit 1; }
 
-    # 3. Firewall-Konfiguration (optional)
-    if command -v ufw &> /dev/null; then
-        read -rp "INFO: Firewall (UFW) erkannt. Sollen die RustDesk-Ports (21115-21119) freigegeben werden? (j/N): " UFW_CHOICE
-        if [[ "$UFW_CHOICE" =~ ^[jJ]$ ]]; then
-            echo_info "Konfiguriere UFW..."
-            ufw allow 21115/tcp
-            ufw allow 21116/tcp
-            ufw allow 21116/udp
-            ufw allow 21117/tcp
-            ufw allow 21118/tcp
-            ufw allow 21119/tcp
-            ufw reload
-            echo_success "Firewall-Regeln wurden hinzugefügt."
-        fi
-    fi
+  if command -v ufw &>/dev/null; then
+    read -rp "UFW-Regeln für Ports 21115-21119 setzen? (j/N): " UFW_CHOICE
+    [[ "$UFW_CHOICE" =~ ^[jJ]$ ]] && { ufw allow 21115/tcp; ufw allow 21116/tcp; ufw allow 21116/udp; ufw allow 21117/tcp; ufw allow 21118/tcp; ufw allow 21119/tcp; ufw reload; echo_success "UFW angepasst."; }
+  fi
 
-    # 4. Server-Binaries herunterladen und korrekt entpacken
-    echo_info "Lade die neueste Version des RustDesk Servers herunter..."
-    LATEST_VERSION=$(curl -s "https://api.github.com/repos/rustdesk/rustdesk-server/releases/latest" | jq -r .tag_name)
-    wget "https://github.com/rustdesk/rustdesk-server/releases/download/${LATEST_VERSION}/rustdesk-server-linux-amd64.zip" -O /tmp/rustdesk-server.zip &>> "$LOG_FILE"
-    if [ $? -ne 0 ]; then
-        echo_error "Download fehlgeschlagen. Details siehe in $LOG_FILE"
-        uninstall_server # Aufräumen
-        exit 1
-    fi
+  echo_info "Lade neueste rustdesk-server Release..."
+  LATEST_VERSION=$(curl -s "https://api.github.com/repos/rustdesk/rustdesk-server/releases/latest" | jq -r .tag_name)
+  wget "https://github.com/rustdesk/rustdesk-server/releases/download/${LATEST_VERSION}/rustdesk-server-linux-amd64.zip" -O /tmp/rustdesk-server.zip &>> "$LOG_FILE" || { echo_error "Download fehlgeschlagen."; uninstall_server; exit 1; }
+  mkdir -p "$INSTALL_PATH"; unzip -o /tmp/rustdesk-server.zip -d "$INSTALL_PATH" &>> "$LOG_FILE"
+  NESTED_PATH=$(find "$INSTALL_PATH" -name hbbs -exec dirname {} \;)
+  if [ -n "$NESTED_PATH" ] && [ "$NESTED_PATH" != "$INSTALL_PATH" ]; then mv "${NESTED_PATH}/"* "$INSTALL_PATH/"; find "$INSTALL_PATH" -type d -empty -delete; fi
+  rm -f /tmp/rustdesk-server.zip
 
-    mkdir -p "$INSTALL_PATH"
-    unzip -o /tmp/rustdesk-server.zip -d "$INSTALL_PATH" &>> "$LOG_FILE"
-
-    NESTED_PATH=$(find "$INSTALL_PATH" -name hbbs -exec dirname {} \;)
-    if [ -n "$NESTED_PATH" ] && [ "$NESTED_PATH" != "$INSTALL_PATH" ]; then
-        mv "${NESTED_PATH}/"* "$INSTALL_PATH/"
-        find "$INSTALL_PATH" -type d -empty -delete
-    fi
-    rm -f /tmp/rustdesk-server.zip
-
-    # 5. Systemd-Services erstellen
-    echo_info "Erstelle Systemd-Dienste..."
-    
-    HBBS_PARAMS="-r ${SERVER_DOMAIN}:21117"
-    HBBR_PARAMS=""
-
-    cat > /etc/systemd/system/hbbs.service <<EOL
+  echo_info "Erzeuge systemd Units..."
+  HBBS_PARAMS="-r ${SERVER_DOMAIN}:21117"; HBBR_PARAMS=""
+  cat > /etc/systemd/system/hbbs.service <<EOL
 [Unit]
 Description=RustDesk ID/Rendezvous Server
-Requires=network-online.target
 After=network-online.target
-
+Requires=network-online.target
 [Service]
 Type=simple
 LimitNOFILE=1048576
 ExecStart=${INSTALL_PATH}/hbbs ${HBBS_PARAMS}
 WorkingDirectory=${INSTALL_PATH}
-User=root
-Group=root
 Restart=always
-StandardOutput=journal
-StandardError=journal
-
 [Install]
 WantedBy=multi-user.target
 EOL
-
-    cat > /etc/systemd/system/hbbr.service <<EOL
+  cat > /etc/systemd/system/hbbr.service <<EOL
 [Unit]
 Description=RustDesk Relay Server
-Requires=network-online.target
 After=network-online.target
-
+Requires=network-online.target
 [Service]
 Type=simple
 LimitNOFILE=1048576
 ExecStart=${INSTALL_PATH}/hbbr ${HBBR_PARAMS}
 WorkingDirectory=${INSTALL_PATH}
-User=root
-Group=root
 Restart=always
-StandardOutput=journal
-StandardError=journal
-
 [Install]
 WantedBy=multi-user.target
 EOL
 
-    systemctl daemon-reload
-    systemctl enable hbbs hbbr &>/dev/null
-    
-    # 6. Konfigurationsdatei erstellen, um die Installation abzuschließen
-    mkdir -p "$CONFIG_DIR"
-    cat > "$CONFIG_FILE" <<EOL
-# RDSM Konfigurationsdatei
+  systemctl daemon-reload; systemctl enable hbbs hbbr &>/dev/null
+  mkdir -p "$CONFIG_DIR"
+  cat > "$CONFIG_FILE" <<EOL
 SERVER_DOMAIN="${SERVER_DOMAIN}"
 HBBS_PARAMS="${HBBS_PARAMS}"
 HBBR_PARAMS="${HBBR_PARAMS}"
 EOL
 
-    # 7. Server starten
-    start_services
-
-    echo_success "RustDesk Server wurde erfolgreich installiert und gestartet."
-    echo_info "Ihr öffentlicher Schlüssel wird nun angezeigt. Bewahren Sie ihn gut auf."
-    echo
-    sleep 2
-    cat "${INSTALL_PATH}/id_ed25519.pub"
-    echo
-    read -rp "Drücken Sie [Enter], um zum Hauptmenü zurückzukehren."
+  start_services
+  echo_success "Server installiert."
+  echo_info "Öffentlicher Schlüssel:"
+  echo; sleep 1; cat "${INSTALL_PATH}/id_ed25519.pub"; echo
+  read -rp "Weiter mit [Enter]..."
 }
 
-# --- Verwaltungsfunktionen ---
+# --- Verwaltung ---
 load_config() { source "$CONFIG_FILE"; }
 start_services() { echo_info "Starte Dienste..."; systemctl start hbbs hbbr; }
 stop_services() { echo_info "Stoppe Dienste..."; systemctl stop hbbs hbbr; }
-restart_services() { echo_info "Starte Dienste neu..."; systemctl restart hbbs hbbr; }
+restart_services() { echo_info "Neustart Dienste..."; systemctl restart hbbs hbbr; }
 show_logs() { journalctl -u hbbs -u hbbr -f --no-pager; }
 
 update_server() {
-    echo_info "Suche nach Updates für den RustDesk Server..."
-    LATEST_VERSION=$(curl -s "https://api.github.com/repos/rustdesk/rustdesk-server/releases/latest" | jq -r .tag_name)
-    CURRENT_VERSION=$(${INSTALL_PATH}/hbbs --version | awk '{print $2}')
-
-    if [ "$LATEST_VERSION" == "$CURRENT_VERSION" ]; then
-        echo_info "Sie verwenden bereits die neueste Version ($CURRENT_VERSION)."
-    else
-        read -rp "Eine neue Version ($LATEST_VERSION) ist verfügbar. Jetzt aktualisieren? (j/N): " UPDATE_CHOICE
-        if [[ "$UPDATE_CHOICE" =~ ^[jJ]$ ]]; then
-            stop_services
-            echo_info "Lade Version $LATEST_VERSION herunter..."
-            wget "https://github.com/rustdesk/rustdesk-server/releases/download/${LATEST_VERSION}/rustdesk-server-linux-amd64.zip" -O /tmp/rustdesk-server.zip &>> "$LOG_FILE"
-            unzip -o /tmp/rustdesk-server.zip -d "$INSTALL_PATH/amd64" &>> "$LOG_FILE"
-            mv "$INSTALL_PATH/amd64/"* "$INSTALL_PATH/"
-            rm -rf /tmp/rustdesk-server.zip "$INSTALL_PATH/amd64"
-            start_services
-            echo_success "Server wurde auf Version $LATEST_VERSION aktualisiert."
-        fi
+  echo_info "Prüfe Updates..."
+  LATEST_VERSION=$(curl -s "https://api.github.com/repos/rustdesk/rustdesk-server/releases/latest" | jq -r .tag_name)
+  CURRENT_VERSION=$(${INSTALL_PATH}/hbbs --version | awk '{print $2}')
+  if [ "$LATEST_VERSION" == "$CURRENT_VERSION" ]; then echo_info "Schon aktuell ($CURRENT_VERSION)."
+  else
+    read -rp "Update auf $LATEST_VERSION durchführen? (j/N): " OK
+    if [[ "$OK" =~ ^[jJ]$ ]]; then
+      stop_services
+      wget "https://github.com/rustdesk/rustdesk-server/releases/download/${LATEST_VERSION}/rustdesk-server-linux-amd64.zip" -O /tmp/rustdesk-server.zip &>> "$LOG_FILE"
+      unzip -o /tmp/rustdesk-server.zip -d "$INSTALL_PATH/amd64" &>> "$LOG_FILE"
+      mv "$INSTALL_PATH/amd64/"* "$INSTALL_PATH/"; rm -rf /tmp/rustdesk-server.zip "$INSTALL_PATH/amd64"
+      start_services; echo_success "Aktualisiert auf $LATEST_VERSION."
     fi
+  fi
 }
 
-
 edit_parameters() {
-    echo_info "Öffne Konfigurationsdatei im Nano-Editor..."
-    echo_warning "Änderungen erfordern einen Neustart der Dienste, um wirksam zu werden."
-    nano "$CONFIG_FILE"
-    read -rp "Sollen die Dienste jetzt neugestartet werden, um die Änderungen zu übernehmen? (j/N): " RESTART_CHOICE
-    if [[ "$RESTART_CHOICE" =~ ^[jJ]$ ]]; then
-        load_config
-        sed -i "s|ExecStart=.*|ExecStart=${INSTALL_PATH}/hbbs ${HBBS_PARAMS}|" /etc/systemd/system/hbbs.service
-        sed -i "s|ExecStart=.*|ExecStart=${INSTALL_PATH}/hbbr ${HBBR_PARAMS}|" /etc/systemd/system/hbbr.service
-        systemctl daemon-reload
-        restart_services
-        echo_success "Parameter aktualisiert und Dienste neugestartet."
-    fi
+  echo_info "Öffne $CONFIG_FILE (nano)..."
+  nano "$CONFIG_FILE"
+  read -rp "Dienste neu starten? (j/N): " R
+  if [[ "$R" =~ ^[jJ]$ ]]; then
+    load_config
+    sed -i "s|ExecStart=.*|ExecStart=${INSTALL_PATH}/hbbs ${HBBS_PARAMS}|" /etc/systemd/system/hbbs.service
+    sed -i "s|ExecStart=.*|ExecStart=${INSTALL_PATH}/hbbr ${HBBR_PARAMS}|" /etc/systemd/system/hbbr.service
+    systemctl daemon-reload; restart_services; echo_success "Übernommen."
+  fi
 }
 
 reset_parameters() {
-    load_config
-    HBBS_PARAMS_DEFAULT="-r ${SERVER_DOMAIN}:21117"
-    HBBR_PARAMS_DEFAULT=""
-    sed -i "s|HBBS_PARAMS=.*|HBBS_PARAMS=\"${HBBS_PARAMS_DEFAULT}\"|" "$CONFIG_FILE"
-    sed -i "s|HBBR_PARAMS=.*|HBBR_PARAMS=\"${HBBR_PARAMS_DEFAULT}\"|" "$CONFIG_FILE"
-    echo_success "Parameter wurden auf Standardwerte zurückgesetzt."
-    edit_parameters
+  load_config; HBBS_PARAMS_DEFAULT="-r ${SERVER_DOMAIN}:21117"; HBBR_PARAMS_DEFAULT=""
+  sed -i "s|HBBS_PARAMS=.*|HBBS_PARAMS=\"${HBBS_PARAMS_DEFAULT}\"|" "$CONFIG_FILE"
+  sed -i "s|HBBR_PARAMS=.*|HBBR_PARAMS=\"${HBBR_PARAMS_DEFAULT}\"|" "$CONFIG_FILE"
+  echo_success "Standardwerte gesetzt."; edit_parameters
 }
-
 
 generate_new_key() {
-    echo_warning "Sie sind dabei, einen neuen Sicherheitsschlüssel zu generieren."
-    echo_warning "ALLE bestehenden Clients verlieren die Verbindung und müssen neu konfiguriert werden!"
-    read -rp "Sind Sie absolut sicher? Geben Sie 'JA' ein, um fortzufahren: " CONFIRM_KEY
-    if [ "$CONFIRM_KEY" == "JA" ]; then
-        stop_services
-        echo_info "Sichere alte Schlüssel..."
-        mv "${INSTALL_PATH}/id_ed25519" "${INSTALL_PATH}/id_ed25519.bak"
-        mv "${INSTALL_PATH}/id_ed25519.pub" "${INSTALL_PATH}/id_ed25519.pub.bak"
-        start_services
-        echo_success "Neue Schlüssel wurden generiert. Server wird gestartet..."
-        sleep 2
-        echo_info "Der neue öffentliche Schlüssel lautet:"
-        echo
-        cat "${INSTALL_PATH}/id_ed25519.pub"
-    else
-        echo_info "Aktion abgebrochen."
-    fi
+  echo_warning "Neuer Schlüssel trennt ALLE Clients!"
+  read -rp "Sicher? 'JA' eingeben: " OK; [ "$OK" != "JA" ] && { echo_info "Abgebrochen."; return; }
+  stop_services
+  mv "${INSTALL_PATH}/id_ed25519" "${INSTALL_PATH}/id_ed25519.bak" 2>/dev/null
+  mv "${INSTALL_PATH}/id_ed25519.pub" "${INSTALL_PATH}/id_ed25519.pub.bak" 2>/dev/null
+  start_services
+  echo_success "Neuer Schlüssel generiert:"; cat "${INSTALL_PATH}/id_ed25519.pub"
 }
 
-# --- Client-Erstellungsfunktionen ---
+# ------------------------------------------------------------
+# Helpers für Client-Build
+# ------------------------------------------------------------
+
+# GitHub-Asset laden
+download_latest_client_asset() {
+  local PATTERN="$1" OUTFILE="$2"
+  local API_URL="https://api.github.com/repos/rustdesk/rustdesk/releases/latest"
+  local URL; URL=$(curl -s "$API_URL" | jq -r ".assets[] | select(.name | test(\"$PATTERN\")) | .browser_download_url" | head -n1)
+  [ -z "$URL" ] && { echo_error "Asset nicht gefunden: $PATTERN"; return 1; }
+  echo_info "Lade $(basename "$URL")"; wget --show-progress -O "$OUTFILE" "$URL" || return 1
+}
+
+# TOML für Server erzeugen (immer frisch -> Schlüssel/Domain-Änderungen greifen)
+write_server_toml() {
+  local OUT="$1" HOST="$2" KEY="$3"
+  cat > "$OUT" <<EOF
+[server]
+host = "${HOST}"
+key  = "${KEY}"
+EOF
+}
+
+# 7-Zip SFX bauen (führt NUR Programm aus; SFX löscht Temp danach)
+# RunProgram/ExecuteParameters lt. 7-Zip Doku. %T = Temp-Ordner.  (SFX entfernt Temp nach Programmende)
+# Quelle: 7-Zip SFX-Doku. :contentReference[oaicite:2]{index=2}
+build_windows_sfx() {
+  local PAYLOAD_DIR="$1" OUT_EXE="$2" RUN_LINE="$3"
+  local SFX_MODULE=""
+  for cand in /usr/lib/p7zip/7zS.sfx /usr/lib/p7zip/7z.sfx /usr/lib/p7zip/7zCon.sfx; do
+    [ -f "$cand" ] && { SFX_MODULE="$cand"; break; }
+  done
+  [ -z "$SFX_MODULE" ] && { echo_error "SFX-Modul nicht gefunden (p7zip-full?)."; return 1; }
+
+  ( cd "$PAYLOAD_DIR" && 7z a -mx9 -bd -t7z payload.7z . >/dev/null ) || return 1
+  cat > "$PAYLOAD_DIR/sfx_config.txt" <<EOF
+;!@Install@!UTF-8!
+RunProgram="${RUN_LINE}"
+;!@InstallEnd@!
+EOF
+  cat "$SFX_MODULE" "$PAYLOAD_DIR/sfx_config.txt" "$PAYLOAD_DIR/payload.7z" > "$OUT_EXE" || return 1
+  chmod +x "$OUT_EXE"
+}
+
+# makeself-Wrapper (extrahiert -> führt Befehl -> räumt auf)
+build_linux_makeself() {
+  local PAYLOAD_DIR="$1" OUT_FILE="$2" START_CMD="$3"
+  makeself --quiet --nox11 "$PAYLOAD_DIR" "$OUT_FILE" "RustDesk One-File" bash -lc "$START_CMD"
+}
+
+# Android QR generieren (offizielles Format) :contentReference[oaicite:3]{index=3}
+build_android_qr() {
+  local HOST="$1" KEY="$2" OUTPNG="$3" OUTJSON="$4"
+  echo "{\"host\":\"${HOST}\",\"key\":\"${KEY}\"}" > "$OUTJSON"
+  qrencode -o "$OUTPNG" "config=$(cat "$OUTJSON")"
+}
+
+# ------------------------------------------------------------
+# Client-Erstellung (ohne Batch/PS1, nur temporär, auto-clean)
+# ------------------------------------------------------------
+
 create_client_package() {
-    OS_TYPE=$1
-    echo_info "Erstelle Client-Paket für ${OS_TYPE}..."
-    load_config
-    RUSTDESK_KEY=$(cat "${INSTALL_PATH}/id_ed25519.pub")
-    
-    mkdir -p "$CLIENT_DIR"
-    
-    API_URL="https://api.github.com/repos/rustdesk/rustdesk/releases/latest"
-    
-    # Hilfsfunktion zum sicheren Herunterladen von Release-Assets
-    download_asset() {
-        ASSET_NAME_PATTERN=$1
-        OUTPUT_FILE=$2
-        DOWNLOAD_URL=$(curl -s "$API_URL" | jq -r ".assets[] | select(.name | test(\"${ASSET_NAME_PATTERN}\")) | .browser_download_url")
-        
-        if [ -z "$DOWNLOAD_URL" ]; then
-            echo_error "Konnte Download-URL für '${ASSET_NAME_PATTERN}' nicht finden."
-            return 1
-        fi
-        
-        echo_info "Lade '${ASSET_NAME_PATTERN}' herunter..."
-        wget --show-progress "$DOWNLOAD_URL" -O "$OUTPUT_FILE" || { echo_error "Download fehlgeschlagen."; return 1; }
-        return 0
-    }
+  local OS_TYPE="$1"
+  echo_info "Erstelle Client für ${OS_TYPE}…"
+  load_config
+  local PUBKEY; PUBKEY=$(cat "${INSTALL_PATH}/id_ed25519.pub")
+  mkdir -p "$CLIENT_DIR"
 
-    # Funktion zum Einbetten der Konfiguration durch binäres Ersetzen (offizielle Methode)
-    embed_config() {
-        FILE_PATH=$1
-        CONFIG_JSON="{\"host\":\"${SERVER_DOMAIN}\",\"key\":\"${RUSTDESK_KEY}\"}"
-        PLACEHOLDER="!!!rustdesk-cm-config!!!"
-        
-        # Ersetze den Platzhalter durch die Konfiguration. Fülle den Rest mit Null-Bytes auf.
-        printf "%s" "$CONFIG_JSON" | dd of="$FILE_PATH" bs=1 seek=$(grep -abo "$PLACEHOLDER" "$FILE_PATH" | cut -d: -f1) conv=notrunc &>/dev/null
-        if [ $? -ne 0 ]; then
-            echo_error "Einbetten der Konfiguration in '${FILE_PATH}' fehlgeschlagen."
-            return 1
-        fi
-        return 0
-    }
+  case "$OS_TYPE" in
+    Windows)
+      local TMP; TMP="$(mktemp -d)"
+      local OUT="${CLIENT_DIR}/RustDesk_${SERVER_DOMAIN}_Windows.exe"
+      download_latest_client_asset "windows.*x86_64\\.exe$" "${TMP}/rustdesk.exe" || { rm -rf "$TMP"; return 1; }
+      mkdir -p "${TMP}/config"; write_server_toml "${TMP}/config/RustDesk2.toml" "$SERVER_DOMAIN" "$PUBKEY"
+      # SFX: führt NUR rustdesk.exe mit --import-config aus, aus dem Temp-Ordner; SFX löscht danach Temp.  --config ist in Docs, aber teils inkonsistent; --import-config mit TOML ist robuster. :contentReference[oaicite:4]{index=4}
+      local RUN="\"%T\\rustdesk.exe\" --import-config \"%T\\config\\RustDesk2.toml\""
+      build_windows_sfx "$TMP" "$OUT" "$RUN" || { rm -rf "$TMP"; return 1; }
+      rm -rf "$TMP"; echo_success "Windows One-File erstellt: $OUT"
+      ;;
 
-    case $OS_TYPE in
-        Windows)
-            FILE_TO_PATCH="${CLIENT_DIR}/RustDesk_Client_Windows.exe"
-            download_asset "rustdesk-.*-x86_64.exe" "$FILE_TO_PATCH" || return 1
-            echo_info "Bette Konfiguration für Windows ein..."
-            embed_config "$FILE_TO_PATCH" || return 1
-            ;;
-        macOS)
-            PLATFORMS=("aarch64" "x86_64")
-            for PLATFORM in "${PLATFORMS[@]}"; do
-                echo_info "Bearbeite macOS Client für ${PLATFORM}..."
-                FILE_TO_PATCH="${CLIENT_DIR}/rustdesk_${PLATFORM}.dmg"
-                download_asset "rustdesk-.*-${PLATFORM}.dmg" "$FILE_TO_PATCH" || continue
-                embed_config "$FILE_TO_PATCH" || continue
-            done
-            ;;
-        Linux)
-            FILE_TO_PATCH="${CLIENT_DIR}/RustDesk_Client_Linux.AppImage"
-            download_asset "rustdesk-.*-x86_64.AppImage" "$FILE_TO_PATCH" || return 1
-            echo_info "Bette Konfiguration für Linux ein..."
-            embed_config "$FILE_TO_PATCH" || return 1
-            ;;
-    esac
-    echo_success "Client-Paket(e) für ${OS_TYPE} wurde(n) erfolgreich in ${CLIENT_DIR} erstellt."
+    Linux)
+      local TMP; TMP="$(mktemp -d)"
+      local OUT="${CLIENT_DIR}/RustDesk_${SERVER_DOMAIN}_Linux.run"
+      download_latest_client_asset "x86_64\\.AppImage$" "${TMP}/rustdesk.AppImage" || { rm -rf "$TMP"; return 1; }
+      chmod +x "${TMP}/rustdesk.AppImage"
+      mkdir -p "${TMP}/config"; write_server_toml "${TMP}/config/RustDesk2.toml" "$SERVER_DOMAIN" "$PUBKEY"
+      # makeself startet AppImage mit Import, danach Ende -> makeself säubert Temp
+      build_linux_makeself "$TMP" "$OUT" "./rustdesk.AppImage --import-config ./config/RustDesk2.toml" || { rm -rf "$TMP"; return 1; }
+      rm -rf "$TMP"; echo_success "Linux One-File erstellt: $OUT"
+      ;;
+
+    macOS)
+      # One-File .sh: lädt DMG, mountet, startet RustDesk direkt vom DMG mit --import-config, unmountet. Keine dauerhafte Installation.
+      local OUT="${CLIENT_DIR}/RustDesk_${SERVER_DOMAIN}_macOS_OneFile.sh"
+      cat > "$OUT" <<'EOSH'
+#!/bin/bash
+set -euo pipefail
+if ! command -v curl >/dev/null; then echo "curl fehlt"; exit 1; fi
+if ! command -v hdiutil >/dev/null; then echo "hdiutil fehlt"; exit 1; fi
+TMPDIR="$(mktemp -d)"; trap 'hdiutil detach "$MP" >/dev/null 2>&1 || true; rm -rf "$TMPDIR"' EXIT
+echo "Lade RustDesk DMG…"
+DMG_URL=$(curl -s https://api.github.com/repos/rustdesk/rustdesk/releases/latest | /usr/bin/python3 - <<'PY'
+import sys, json, re
+data=json.load(sys.stdin)
+for a in data.get("assets",[]):
+    n=a.get("name","")
+    if re.search(r"mac.*(x86_64|aarch64).*\.dmg$", n, re.I):
+        print(a["browser_download_url"]); break
+PY
+)
+[ -z "$DMG_URL" ] && { echo "Kein DMG gefunden"; exit 1; }
+curl -L "$DMG_URL" -o "$TMPDIR/rustdesk.dmg"
+echo "Mounten…"
+MP=$(hdiutil attach "$TMPDIR/rustdesk.dmg" -nobrowse | awk '/Volumes/ {print $3; exit}')
+echo "Starte RustDesk mit Import…"
+/usr/bin/python3 - <<'PY'
+import os, subprocess, time, shlex, sys
+cfg = """__RDTOML__"""
+cfg_path = os.path.join(os.environ["TMPDIR"] if "TMPDIR" in os.environ else "/tmp","RustDesk2.toml")
+open(cfg_path,"w").write(cfg)
+# Pfad zur Binärdatei im .app
+app_bin = os.path.join(os.environ["MP"], "RustDesk.app/Contents/MacOS/RustDesk")
+cmd = [app_bin, "--import-config", cfg_path]
+p = subprocess.Popen(cmd)
+p.wait()
+PY
+echo "Unmounten…"
+EOSH
+      # TOML einbetten
+      local TOML; TOML=$(printf '[server]\nhost = "%s"\nkey  = "%s"\n' "$SERVER_DOMAIN" "$PUBKEY")
+      # sichere Ersetzung (keine Slashes kaputt machen)
+      awk -v toml="$TOML" '{gsub(/__RDTOML__/,toml); print}' "$OUT" > "${OUT}.tmp" && mv "${OUT}.tmp" "$OUT"
+      chmod +x "$OUT"
+      echo_success "macOS One-File erstellt: $OUT"
+      ;;
+
+    Android)
+      mkdir -p "$CLIENT_DIR/android"
+      build_android_qr "$SERVER_DOMAIN" "$PUBKEY" "${CLIENT_DIR}/android/android_config_qr.png" "${CLIENT_DIR}/android/android_config.json"
+      echo_success "Android: QR & JSON erzeugt unter ${CLIENT_DIR}/android/"
+      echo_info "Android: App öffnen → Menü → Server → QR scannen. (Offizielle Methode.)"
+      ;;
+
+  esac
 }
 
 show_qr_code() {
-    load_config
-    RUSTDESK_KEY=$(cat "${INSTALL_PATH}/id_ed25519.pub")
-    CONFIG_STRING="{\"host\":\"${SERVER_DOMAIN}\",\"key\":\"${RUSTDESK_KEY}\"}"
-    echo_info "Scannen Sie diesen QR-Code mit Ihrer mobilen RustDesk App:"
-    qrencode -t ansiutf8 "$CONFIG_STRING"
+  load_config
+  local PUBKEY; PUBKEY=$(cat "${INSTALL_PATH}/id_ed25519.pub")
+  local CONFIG_STRING="config={\"host\":\"${SERVER_DOMAIN}\",\"key\":\"${PUBKEY}\"}"
+  echo_info "QR (Android/iOS) – mit Handy in RustDesk scannen:"
+  qrencode -t ansiutf8 "$CONFIG_STRING"
 }
 
 start_download_server() {
-    if ! command -v python3 &> /dev/null; then
-        echo_error "Python 3 ist nicht installiert, der Webserver kann nicht gestartet werden."
-        return
-    fi
-    IP_ADDR=$(hostname -I | awk '{print $1}')
-    PORT=8000
-    echo_info "Starte temporären Webserver zum Download der Clients."
-    echo_info "Öffnen Sie in Ihrem Browser: http://${IP_ADDR}:${PORT}"
-    echo_warning "Drücken Sie STRG+C, um den Server zu beenden und zum Menü zurückzukehren."
-    pushd "$CLIENT_DIR" > /dev/null
-    python3 -m http.server $PORT
-    popd > /dev/null
+  command -v python3 >/dev/null || { echo_error "Python3 fehlt."; return; }
+  [ -d "$CLIENT_DIR" ] || mkdir -p "$CLIENT_DIR"
+  IP_ADDR=$(hostname -I | awk '{print $1}'); PORT=8000
+  echo_info "HTTP-Download unter: http://${IP_ADDR}:${PORT}"
+  echo_warning "STRG+C beendet."
+  ( cd "$CLIENT_DIR" && python3 -m http.server $PORT )
 }
-
 
 # --- Menüs ---
 
 client_menu() {
-    while true; do
-        clear
-        echo "--------------------------------------------------"
-        echo "  Client-Pakete erstellen"
-        echo "--------------------------------------------------"
-        echo "  1) Alle Clients (Windows, macOS, Linux)"
-        echo "  2) Nur Windows Client (.exe)"
-        echo "  3) Nur macOS Clients (.dmg)"
-        echo "  4) Nur Linux Client (.AppImage)"
-        echo "  5) QR-Code für mobile Clients anzeigen"
-        echo "  6) Download-Server starten"
-        echo "  0) Zurück zum Hauptmenü"
-        echo "--------------------------------------------------"
-        read -rp "Ihre Auswahl: " choice
-        
-        case $choice in
-            1) create_client_package Windows; create_client_package macOS; create_client_package Linux ;;
-            2) create_client_package Windows ;;
-            3) create_client_package macOS ;;
-            4) create_client_package Linux ;;
-            5) show_qr_code ;;
-            6) start_download_server ;;
-            0) break ;;
-            *) echo_error "Ungültige Auswahl." ;;
-        esac
-        read -rp "Drücken Sie [Enter], um fortzufahren."
-    done
+  while true; do
+    clear
+    echo "--------------------------------------------------"
+    echo "  Client-Pakete erstellen"
+    echo "--------------------------------------------------"
+    echo "  1) Alle: Windows (SFX), Linux (.run), macOS (.sh), Android (QR)"
+    echo "  2) Nur Windows (SFX .exe)"
+    echo "  3) Nur macOS (OneFile .sh)"
+    echo "  4) Nur Linux (OneFile .run)"
+    echo "  5) Nur Android (QR/JSON)"
+    echo "  6) QR-Code in Konsole anzeigen"
+    echo "  7) Download-Server starten"
+    echo "  0) Zurück"
+    echo "--------------------------------------------------"
+    read -rp "Auswahl: " choice
+    case $choice in
+      1) create_client_package Windows; create_client_package Linux; create_client_package macOS; create_client_package Android ;;
+      2) create_client_package Windows ;;
+      3) create_client_package macOS ;;
+      4) create_client_package Linux ;;
+      5) create_client_package Android ;;
+      6) show_qr_code ;;
+      7) start_download_server ;;
+      0) break ;;
+      *) echo_error "Ungültig." ;;
+    esac
+    read -rp "Weiter mit [Enter]..."
+  done
 }
 
 main_menu() {
-    while true; do
-        load_config
-        HBBS_STATUS=$(systemctl is-active hbbs)
-        HBBR_STATUS=$(systemctl is-active hbbr)
-        
-        clear
-        echo "--------------------------------------------------"
-        echo "  RustDesk Server Manager (RDSM)"
-        echo "--------------------------------------------------"
-        echo -e "  Domain: ${C_YELLOW}${SERVER_DOMAIN}${C_RESET}"
-        echo -e "  Status: hbbs [${HBBS_STATUS}] | hbbr [${HBBR_STATUS}]"
-        echo "--------------------------------------------------"
-        echo ""
-        echo "  Hauptmenü:"
-        echo "  1) Server-Dienste starten"
-        echo "  2) Server-Dienste stoppen"
-        echo "  3) Server-Dienste neustarten"
-        echo "  4) Live-Logs anzeigen"
-        echo ""
-        echo "  Client-Verwaltung:"
-        echo "  5) 🛠️  Client-Pakete erstellen (Untermenü)"
-        echo ""
-        echo "  Konfiguration & Wartung:"
-        echo "  6) Startparameter bearbeiten"
-        echo "  7) Standard-Parameter wiederherstellen"
-        echo "  8) 🔑  Neuen Sicherheitsschlüssel generieren"
-        echo "  9) Server-Software aktualisieren"
-        echo ""
-        echo "  System:"
-        echo "  10) ALLES deinstallieren"
-        echo "  0) Beenden"
-        echo "--------------------------------------------------"
-        read -rp "Ihre Auswahl: " choice
-
-        case $choice in
-            1) start_services ;;
-            2) stop_services ;;
-            3) restart_services ;;
-            4) show_logs ;;
-            5) client_menu ;;
-            6) edit_parameters ;;
-            7) reset_parameters ;;
-            8) generate_new_key ;;
-            9) update_server ;;
-            10) 
-                read -rp "WARNUNG: Dies wird den Server vollständig entfernen. Geben Sie 'JA' ein zur Bestätigung: " CONFIRM_UNINSTALL
-                if [ "$CONFIRM_UNINSTALL" == "JA" ]; then
-                    uninstall_server
-                    exit 0
-                else
-                    echo_info "Deinstallation abgebrochen."
-                fi
-                ;;
-            0) exit 0 ;;
-            *) echo_error "Ungültige Auswahl." ;;
-        esac
-        
-        if [[ "$choice" != "4" ]]; then
-             read -rp "Drücken Sie [Enter], um fortzufahren."
-        fi
-    done
+  while true; do
+    load_config 2>/dev/null || true
+    HBBS_STATUS=$(systemctl is-active hbbs 2>/dev/null); HBBR_STATUS=$(systemctl is-active hbbr 2>/dev/null)
+    clear
+    echo "--------------------------------------------------"
+    echo "  RustDesk Server Manager (RDSM)"
+    echo "--------------------------------------------------"
+    echo -e "  Domain: ${C_YELLOW}${SERVER_DOMAIN:-<nicht gesetzt>}${C_RESET}"
+    echo -e "  Status: hbbs [${HBBS_STATUS:-n/a}] | hbbr [${HBBR_STATUS:-n/a}]"
+    echo "--------------------------------------------------"
+    echo "  1) Server starten"
+    echo "  2) Server stoppen"
+    echo "  3) Server neustarten"
+    echo "  4) Live-Logs"
+    echo "  5) 🛠️  Client-Pakete erstellen"
+    echo "  6) Startparameter bearbeiten"
+    echo "  7) Standard-Parameter wiederherstellen"
+    echo "  8) 🔑  Neuen Sicherheitsschlüssel generieren"
+    echo "  9) Server-Software aktualisieren"
+    echo " 10) ALLES deinstallieren"
+    echo "  0) Beenden"
+    echo "--------------------------------------------------"
+    read -rp "Auswahl: " choice
+    case $choice in
+      1) start_services ;;
+      2) stop_services ;;
+      3) restart_services ;;
+      4) show_logs ;;
+      5) client_menu ;;
+      6) edit_parameters ;;
+      7) reset_parameters ;;
+      8) generate_new_key ;;
+      9) update_server ;;
+      10) read -rp "Gib 'JA' ein: " C; [ "$C" = "JA" ] && { uninstall_server; exit 0; } || echo_info "Abgebrochen." ;;
+      0) exit 0 ;;
+      *) echo_error "Ungültig." ;;
+    esac
+    [[ "$choice" != "4" ]] && read -rp "Weiter mit [Enter]..."
+  done
 }
 
 recovery_menu() {
-    clear
-    echo "--------------------------------------------------"
-    echo -e "  ${C_YELLOW}WARNUNG: Unvollständige Installation erkannt!${C_RESET}"
-    echo "--------------------------------------------------"
-    echo "  Es scheint, als wäre der letzte Installationsversuch"
-    echo "  fehlgeschlagen. Ein Neustart der Installation wird"
-    echo "  ohne vorherige Bereinigung nicht empfohlen."
-    echo ""
-    echo "  Was möchten Sie tun?"
-    echo ""
-    echo "  1) Installationsreste sauber entfernen (Empfohlen)"
-    echo "  2) Trotzdem versuchen, neu zu installieren"
-    echo "  0) Beenden"
-    echo "--------------------------------------------------"
-    read -rp "Ihre Auswahl: " choice
-
-    case $choice in
-        1) uninstall_server; install_server ;;
-        2) uninstall_server; install_server ;; # Sicherheitshalber immer erst aufräumen
-        0) exit 0 ;;
-        *) echo_error "Ungültige Auswahl." ;;
-    esac
+  clear
+  echo "--------------------------------------------------"
+  echo -e "  ${C_YELLOW}WARNUNG: Unvollständige Installation erkannt!${C_RESET}"
+  echo "--------------------------------------------------"
+  echo "  1) Sauber entfernen (empfohlen) & neu installieren"
+  echo "  2) Trotzdem neu installieren"
+  echo "  0) Beenden"
+  echo "--------------------------------------------------"
+  read -rp "Auswahl: " choice
+  case $choice in
+    1) uninstall_server; install_server ;;
+    2) uninstall_server; install_server ;;
+    0) exit 0 ;;
+    *) echo_error "Ungültig." ;;
+  esac
 }
 
-# --- Skriptausführung ---
+# --- Start ---
 check_root
-
 STATE=$(check_installation_state)
-
 case $STATE in
-    "SAUBER")
-        read -rp "Willkommen beim RustDesk Server Manager v0.4. Keine Installation gefunden. Jetzt installieren? (J/n): " INSTALL_CHOICE
-        if [[ -z "$INSTALL_CHOICE" || "$INSTALL_CHOICE" =~ ^[jJ]$ ]]; then
-            install_server
-            main_menu
-        else
-            echo_info "Installation abgebrochen."
-            exit 0
-        fi
-        ;;
-    "VOLLSTÄNDIG")
-        main_menu
-        ;;
-    "FEHLGESCHLAGEN")
-        recovery_menu
-        ;;
+  "SAUBER") read -rp "Willkommen bei RDSM v0.6. Jetzt installieren? (J/n): " A; if [[ -z "$A" || "$A" =~ ^[jJ]$ ]]; then install_server; main_menu; else echo_info "Abbruch."; fi ;;
+  "VOLLSTÄNDIG") main_menu ;;
+  "FEHLGESCHLAGEN") recovery_menu ;;
 esac
-
 exit 0
